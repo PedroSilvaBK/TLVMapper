@@ -4,12 +4,11 @@ plugins {
 }
 
 group = 'io.github.pedrosilvabk'
-version = findProperty('releaseVersion') ?: '1.0.2-SNAPSHOT'
+version = findProperty('releaseVersion') ?: '1.0.0-SNAPSHOT'
 
 repositories {
     // Use Maven Central for resolving dependencies.
     mavenCentral()
-    mavenLocal()
 }
 
 dependencies {
@@ -30,12 +29,12 @@ mavenPublishing {
     publishToMavenCentral()
     signAllPublications()
 
-    coordinates(group.toString(), 'tlvparsing-library', version.toString())
+    coordinates(group.toString(), 'tlvmapper', version.toString())
 
     pom {
-        name = 'TLV Parsing Library'
-        description = 'A library for parsing TLV-encoded data'   // <-- edit
-        url = 'https://github.com/PedroSilvaBK/TLVParsing-library'         // <-- edit
+        name = 'TLV Mapper'
+        description = 'A library for mapping TLV Structures to java classes'   // <-- edit
+        url = 'https://github.com/PedroSilvaBK/TLVMapper'         // <-- edit
         licenses {
             license {
                 name = 'The Apache License, Version 2.0'
@@ -50,9 +49,9 @@ mavenPublishing {
             }
         }
         scm {
-            url = 'https://github.com/PedroSilvaBK/TLVParsing-library'
-            connection = 'scm:git:git://github.com/PedroSilvaBK/TLVParsing-library.git'
-            developerConnection = 'scm:git:ssh://github.com/PedroSilvaBK/TLVParsing-library.git'
+            url = 'https://github.com/PedroSilvaBK/TLVMapper'
+            connection = 'scm:git:git://github.com/PedroSilvaBK/TLVMapper.git'
+            developerConnection = 'scm:git:ssh://github.com/PedroSilvaBK/TLVMapper.git'
         }
     }
 }
