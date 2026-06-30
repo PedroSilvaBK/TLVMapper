@@ -2,23 +2,17 @@ package io.github.pedrosilvabk.codec;
 
 
 import io.github.pedrosilvabk.annotation.Codec;
-import io.github.pedrosilvabk.annotation.NativeCodec;
-import io.github.pedrosilvabk.registry.ValueTLVCodec;
+import io.github.pedrosilvabk.registry.CustomCodec;
 
 @Codec
-@NativeCodec
-public class BooleanCodec implements ValueTLVCodec<Boolean> {
-    @Override
-    public Class<Boolean> type() {
-        return Boolean.TYPE;
+public class BooleanCodec extends CustomCodec<Boolean> {
+    public BooleanCodec() {
     }
 
-    @Override
     public byte[] encode(Boolean value) {
         return new byte[]{(byte) (value ? 1 : 0)};
     }
 
-    @Override
     public Boolean decode(byte[] bytes) {
         return bytes.length > 0 && bytes[0] != 0;
     }

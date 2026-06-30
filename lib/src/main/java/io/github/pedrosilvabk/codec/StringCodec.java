@@ -1,17 +1,14 @@
 package io.github.pedrosilvabk.codec;
 
 import io.github.pedrosilvabk.annotation.Codec;
-import io.github.pedrosilvabk.annotation.NativeCodec;
-import io.github.pedrosilvabk.registry.ValueTLVCodec;
+import io.github.pedrosilvabk.registry.CustomCodec;
 
 import java.nio.charset.StandardCharsets;
 
 @Codec
-@NativeCodec
-public class StringCodec implements ValueTLVCodec<String> {
-    @Override
-    public Class<String> type() {
-        return String.class;
+public class StringCodec extends CustomCodec<String> {
+
+    public StringCodec() {
     }
 
     @Override

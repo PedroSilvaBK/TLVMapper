@@ -6,8 +6,8 @@ import io.github.pedrosilvabk.annotation.Codec;
 import io.github.pedrosilvabk.annotation.TLV;
 import io.github.pedrosilvabk.annotation.Tag;
 import io.github.pedrosilvabk.annotation.TagList;
-import io.github.pedrosilvabk.registry.CodecRegistry;
-import io.github.pedrosilvabk.registry.ObjectTLVCodec;
+import io.github.pedrosilvabk.codec.*;
+import io.github.pedrosilvabk.registry.*;
 import io.github.pedrosilvabk.tlv.TLVBuilder;
 import io.github.pedrosilvabk.tlv.TLVParser;
 import io.github.pedrosilvabk.utils.TLVUtils;
@@ -15,21 +15,24 @@ import io.github.pedrosilvabk.utils.TLVUtils;
 import javax.annotation.processing.*;
 import javax.lang.model.SourceVersion;
 import javax.lang.model.element.*;
-import javax.lang.model.type.DeclaredType;
-import javax.lang.model.type.MirroredTypeException;
-import javax.lang.model.type.TypeMirror;
+import javax.lang.model.type.*;
 import javax.tools.Diagnostic;
+import javax.tools.FileObject;
+import javax.tools.StandardLocation;
 import java.io.IOException;
-import java.util.ArrayList;
-import java.util.LinkedHashMap;
-import java.util.List;
-import java.util.Set;
+import java.io.Writer;
+import java.util.*;
 
 @AutoService(Processor.class)
-@SupportedAnnotationTypes("org.example.annotation.TLV")
 @SupportedSourceVersion(SourceVersion.RELEASE_21)
 public class TLVProcessor extends AbstractProcessor {
+    private static final String GENERATED_PKG = "tlv.generated";
+    private static final String CODECS_PKG = GENERATED_PKG + ".codecs";
 
+    private static final String SERVICE_FILE =
+            "META-INF/services/io.github.pedrosilvabk.registry.BaseCodec";
+
+    private final List<String> generatedCodecFqcns = new ArrayList<>();
     // ── Data ─────────────────────────────────────────────────────────────
 
     private static class FieldInfo {
@@ -37,22 +40,27 @@ public class TLVProcessor extends AbstractProcessor {
         String type;
         TypeMirror typeMirror;
         int tagId;
-        boolean isValueType;
         boolean customCodec;
         String codecClassName;
         boolean useInnerTagAsParent;
+        boolean asNoInnerTag;
         boolean presenceIsValue;
         boolean isList;
+        boolean isArray;
         int itemTag;
         String itemType;
-        boolean isItemValueType;
+    }
+
+    @Override
+    public Set<String> getSupportedAnnotationTypes() {
+        return Set.of(TLV.class.getCanonicalName());
     }
 
     // ── Entry point ──────────────────────────────────────────────────────
 
     @Override
     public boolean process(Set<? extends TypeElement> annotations, RoundEnvironment roundEnv) {
-        List<TypeSpec> codecs = new ArrayList<>();
+//        List<TypeSpec> codecs = new ArrayList<>();
         Element lastElement = null;
 
         for (Element element : roundEnv.getElementsAnnotatedWith(TLV.class)) {
@@ -63,31 +71,67 @@ public class TLVProcessor extends AbstractProcessor {
 
             lastElement = element;
             try {
-                codecs.add(generateCodec((TypeElement) element));
+//                codecs.add(generateCodec((TypeElement) element));
+                generateCodec((TypeElement) element);
             } catch (Exception ex) {
                 error("Failed generating codec: " + ex, element);
             }
         }
 
-        if (lastElement != null) {
+        for (Element element : roundEnv.getElementsAnnotatedWith(Codec.class)) {
+            if (element.getKind() != ElementKind.CLASS) {
+                error("@Codec can only be applied to classes", element);
+                continue;
+            }
+
+            TypeElement typeElement = (TypeElement) element;
+
+            String t = typeElement.getQualifiedName().toString();
+
+            generatedCodecFqcns.add(t);
+        }
+
+        if (roundEnv.processingOver() && !generatedCodecFqcns.isEmpty()) {
             try {
-                generateTLVFactory(codecs, lastElement);
+                writeServiceFile();
             } catch (IOException e) {
-                throw new RuntimeException(e);
+                error("Failed writing service file: " + e, null);
             }
         }
+
+//        if (lastElement != null) {
+//            try {
+//                generateTLVFactory(codecs, lastElement);
+//            } catch (IOException e) {
+//                throw new RuntimeException(e);
+//            }
+//        }
 
         return true;
     }
 
+    private void writeServiceFile() throws IOException {
+        FileObject file = processingEnv.getFiler()
+                .createResource(StandardLocation.CLASS_OUTPUT, "", SERVICE_FILE);
+        try (Writer w = file.openWriter()) {
+            for (String fqcn : generatedCodecFqcns) {
+                w.write(fqcn);
+                w.write('\n');
+            }
+        }
+    }
+
     // ── Codec generation (orchestrator) ──────────────────────────────────
 
-    private TypeSpec generateCodec(TypeElement clazz) throws IOException {
-        String pkg = packageOf(clazz);
+    private void generateCodec(TypeElement clazz) throws IOException {
+        String pkg = CODECS_PKG;
         String simpleName = clazz.getSimpleName().toString();
         int parentTag = clazz.getAnnotation(TLV.class).value();
 
-        ClassName className = ClassName.get(pkg, simpleName);
+        String pk2 = packageOf(clazz);
+
+
+        ClassName className = ClassName.get(pk2, simpleName);
         ClassName genClassName = ClassName.get(pkg, simpleName + "__TLVCodec");
 
         List<FieldInfo> fields = collectFields(clazz);
@@ -97,19 +141,12 @@ public class TLVProcessor extends AbstractProcessor {
         MethodSpec decodeMethod = buildDecodeMethod(className, simpleName, fields);
 
         TypeSpec codec = TypeSpec.classBuilder(genClassName)
-                .addSuperinterface(ParameterizedTypeName.get(ClassName.get(ObjectTLVCodec.class), className))
+                .superclass(ParameterizedTypeName.get(ClassName.get(GeneratedCodec.class), className))
                 .addAnnotation(Codec.class)
                 .addModifiers(Modifier.PUBLIC)
-                .addField(CodecRegistry.class, "registry", Modifier.PRIVATE)
+                // public no-arg constructor required by ServiceLoader
                 .addMethod(MethodSpec.constructorBuilder()
                         .addModifiers(Modifier.PUBLIC)
-                        .addParameter(CodecRegistry.class, "registry")
-                        .addStatement("this.registry = registry")
-                        .build())
-                .addMethod(MethodSpec.methodBuilder("type")
-                        .addModifiers(Modifier.PUBLIC)
-                        .returns(ParameterizedTypeName.get(ClassName.get(Class.class), className))
-                        .addStatement("return $T.class", className)
                         .build())
                 .addMethod(encodeMethod)
                 .addMethod(decodeMethod)
@@ -117,7 +154,6 @@ public class TLVProcessor extends AbstractProcessor {
                 .build();
 
         JavaFile.builder(pkg, codec).build().writeTo(processingEnv.getFiler());
-        return codec;
     }
 
     // ── Field collection ─────────────────────────────────────────────────
@@ -143,34 +179,61 @@ public class TLVProcessor extends AbstractProcessor {
         return fields;
     }
 
+    private final Map<String, CustomCodec<?>> builtInCodecs = Map.of(
+            int.class.getName(), new IntegerCodec(),
+            Integer.class.getName(), new IntegerCodec(),
+            boolean.class.getName(), new BooleanCodec(),
+            String.class.getName(), new StringCodec(),
+            byte[].class.getCanonicalName(), new ByteArrCodec(),
+            byte.class.getName(), new ByteCodec()
+    );
+
     private FieldInfo buildTagFieldInfo(VariableElement field, Tag tag) {
         FieldInfo info = baseFieldInfo(field);
         info.useInnerTagAsParent = tag.useInnerTagAsParent();
         info.presenceIsValue = tag.presenceIsValue();
-        info.isValueType = isValueType(field.asType());
 
         if (info.presenceIsValue && !info.type.equals("boolean") && !info.type.equals("java.lang.Boolean")) {
             error("presenceIsValue can only be used on boolean fields", field);
         }
 
         TypeMirror codecMirror = resolveCodecMirror(() -> tag.codec());
+        CustomCodec<?> codec = builtInCodecs.get( info.type );
+
         if (isCustomCodec(codecMirror)) {
             info.customCodec = true;
             info.codecClassName = codecMirror.toString();
+        }else if ( codec != null) {
+            info.customCodec = true;
+            info.codecClassName = codec.getClass().getCanonicalName();
         } else {
             info.codecClassName = ClassName.get(field.asType()).toString();
         }
 
-        if (tag.useInnerTagAsParent()) {
-            TypeElement fieldTypeElement = (TypeElement) processingEnv.getTypeUtils().asElement(field.asType());
-            TLV tlv = fieldTypeElement.getAnnotation(TLV.class);
-            if (tlv == null) {
-                error("Field " + info.name + " uses useInnerTagAsParent but its type has no @TLV", field);
-                info.tagId = -1;
-            } else {
-                info.tagId = tlv.value();
-            }
-        } else {
+        info.tagId = tag.value();
+
+        TypeElement fieldTypeElement = (TypeElement) processingEnv.getTypeUtils().asElement(field.asType());
+        if (fieldTypeElement == null) {
+            return info;
+        }
+
+        TLV tlv = fieldTypeElement.getAnnotation(TLV.class);
+        if (tlv == null) {
+            return info;
+        }
+
+        if (info.useInnerTagAsParent && tlv.value() == -1) {
+            error("Cannot use useInnerTagAsParent when no inner tag is set", field);
+        }
+
+        if (tlv.value() == -1) {
+            info.asNoInnerTag = true;
+            info.tagId = tag.value();
+        }
+        else if (tag.useInnerTagAsParent()) {
+            info.tagId = tlv.value();
+        }
+        else {
             info.tagId = tag.value();
         }
 
@@ -182,18 +245,26 @@ public class TLVProcessor extends AbstractProcessor {
         info.isList = true;
         info.tagId = tagList.containerTag();
         info.itemTag = tagList.itemTag();
+        info.isArray = info.type.contains("[]");
 
         if (field.asType() instanceof DeclaredType dt && !dt.getTypeArguments().isEmpty()) {
             TypeMirror itemMirror = dt.getTypeArguments().getFirst();
             info.itemType = itemMirror.toString();
-            info.isItemValueType = isValueType(itemMirror);
         }
 
         TypeMirror codecMirror = resolveCodecMirror(tagList::codec);
+        CustomCodec<?> codec = builtInCodecs.get( info.itemType );
+
         if (isCustomCodec(codecMirror)) {
             info.customCodec = true;
             info.codecClassName = codecMirror.toString();
+        }else if ( codec != null) {
+            info.customCodec = true;
+            info.codecClassName = codec.getClass().getCanonicalName();
+        } else {
+            info.codecClassName = ClassName.get(field.asType()).toString();
         }
+
 
         return info;
     }
@@ -201,7 +272,7 @@ public class TLVProcessor extends AbstractProcessor {
     private FieldInfo baseFieldInfo(VariableElement field) {
         FieldInfo info = new FieldInfo();
         info.name = field.getSimpleName().toString();
-        info.type = field.asType().toString();
+        info.type = TypeName.get(field.asType()).withoutAnnotations().toString();
         info.typeMirror = field.asType();
         return info;
     }
@@ -209,26 +280,49 @@ public class TLVProcessor extends AbstractProcessor {
     // ── Encode generation ────────────────────────────────────────────────
 
     private MethodSpec buildEncodeMethod(ClassName className, List<FieldInfo> fields, int parentTag) {
-        StringBuilder body = new StringBuilder();
-        body.append(writeEncodeTagAs(parentTag, "tag")).append(";\n");
+        boolean hasOuterTag = parentTag != -1;
+
+        MethodSpec.Builder methodBuilder = MethodSpec.methodBuilder("encode")
+                .addModifiers(Modifier.PUBLIC)
+                .returns(byte[].class)
+                .addParameter(className, "self");
+
+        String encodeMethodTemplate = "byte[] %s = self.%s == %s ? new byte[0] : encode%s(self.%s)";
 
         for (FieldInfo fi : fields) {
-            body.append("byte[] ").append(fi.name)
-                    .append(" = encode").append(fi.name.toUpperCase())
-                    .append("(self.").append(getterName(fi.name)).append("); \n");
+            if (fi.type.equals("boolean") || fi.type.equals("byte")) {
+                methodBuilder.addStatement(
+                        "byte[] %s = encode%s(self.%s)"
+                                .formatted(fi.name, fi.name.toUpperCase(), getterName( fi.name, fi.type ))
+                );
+
+                continue;
+            }
+
+            String encodeMethod = encodeMethodTemplate
+                    .formatted(fi.name,
+                            getterName(fi.name, fi.type),
+                            getDefaultValue(fi),
+                            fi.name.toUpperCase(),
+                            getterName(fi.name, fi.type));
+
+            methodBuilder.addStatement(encodeMethod);
+        }
+
+        String concatArgs = String.join(",", fields.stream().map(fi -> fi.name).toList());
+
+        if (!hasOuterTag) {
+            methodBuilder.addStatement("return $T.concat(" + concatArgs + ")", TLVUtils.class);
+            return methodBuilder.build();
         }
 
         String lengthArgs = String.join("+", fields.stream().map(fi -> fi.name + ".length").toList());
-        String concatArgs = String.join(",", fields.stream().map(fi -> fi.name).toList());
-
-        return MethodSpec.methodBuilder("encode")
-                .addModifiers(Modifier.PUBLIC)
-                .returns(byte[].class)
-                .addParameter(className, "self")
-                .addStatement(body.toString())
-                .addStatement("byte[] length = TLVUtils.encodeLength(" + lengthArgs + ")")
-                .addStatement("return TLVUtils.concat(tag, length, " + concatArgs + ")")
-                .build();
+        methodBuilder.addStatement(writeEncodeTagAs(parentTag, "tag"));
+        methodBuilder.addStatement("byte[] length = $T.encodeLength(" + lengthArgs + ")", TLVUtils.class);
+        methodBuilder.addStatement(
+                "return $T.concat(tag, length, " + concatArgs + ")", TLVUtils.class
+        );
+        return methodBuilder.build();
     }
 
     private MethodSpec buildFieldEncoder(FieldInfo fi) {
@@ -249,7 +343,7 @@ public class TLVProcessor extends AbstractProcessor {
                 .addParameter(ClassName.get(fi.typeMirror), "self")
                 .addStatement("if (!self) return new byte[0]")
                 .addStatement(writeEncodeTagAs(fi.tagId, "tag"))
-                .addStatement("return TLVUtils.concat(tag, new byte[] {0x00})")
+                .addStatement("return $T.concat(tag, new byte[] {0x00})", TLVUtils.class)
                 .build();
     }
 
@@ -264,8 +358,8 @@ public class TLVProcessor extends AbstractProcessor {
                 .addParameter(ClassName.get(fi.typeMirror), "self")
                 .addStatement(writeEncodeTagAs(fi.tagId, "tag"))
                 .addStatement("byte[] value = " + encodeCall(fi, "self"))
-                .addStatement("byte[] length = TLVUtils.encodeLength(value.length)")
-                .addStatement("return TLVUtils.concat(tag, length, value)")
+                .addStatement("byte[] length = $T.encodeLength(value.length)", TLVUtils.class)
+                .addStatement("return $T.concat(tag, length, value)", TLVUtils.class)
                 .build();
     }
 
@@ -287,26 +381,29 @@ public class TLVProcessor extends AbstractProcessor {
      * Wraps all items inside a container tag, each item with its own item tag.
      */
     private MethodSpec buildListEncoder(FieldInfo fi) {
-        String itemEncode = itemEncodeCall(fi, "self.get(i)");
+        String itemAccessMethod = fi.isArray ? "self[i]" : "self.get(i)";
+        String sizeMethod = fi.isArray ? "length" : "size()";
 
-        String body = writeEncodeTagAs(fi.tagId, "tag") + ";\n"
-                + writeEncodeTagAs(fi.itemTag, "itemTagBytes") + ";\n"
-                + """
-                byte[][] items = new byte[self.size()][];
-                for (int i = 0; i < self.size(); i++) {
-                  byte[] itemValue = %s;
-                  byte[] itemLength = TLVUtils.encodeLength(itemValue.length);
-                  items[i] = TLVUtils.concat(itemTagBytes, itemLength, itemValue);
-                }
-                byte[] content = TLVUtils.concat(items);
-                byte[] length = TLVUtils.encodeLength(content.length);
-                return TLVUtils.concat(tag, length, content)""".formatted(itemEncode);
+        String itemEncode = itemEncodeCall(fi, itemAccessMethod);
+
 
         return MethodSpec.methodBuilder("encode" + fi.name.toUpperCase())
                 .addModifiers(Modifier.PRIVATE)
                 .returns(byte[].class)
-                .addParameter(TypeName.get(fi.typeMirror), "self")
-                .addStatement(body)
+                .addParameter(ClassName.get(fi.typeMirror), "self")
+                .addStatement(writeEncodeTagAs(fi.tagId, "tag"))
+                .addStatement(writeEncodeTagAs(fi.itemTag, "itemTagBytes"))
+                .addStatement("byte[][] items = new byte[self.%s][]".formatted(sizeMethod))
+                .addCode("""
+                for (int i = 0; i < self.%s; i++) {
+                  byte[] itemValue = %s;
+                  byte[] itemLength = TLVUtils.encodeLength(itemValue.length);
+                  items[i] = TLVUtils.concat(itemTagBytes, itemLength, itemValue);
+                }
+                       \s""".formatted(sizeMethod, itemEncode))
+                .addStatement("byte[] content = $T.concat(items)", TLVUtils.class)
+                .addStatement("byte[] length = $T.encodeLength(content.length)", TLVUtils.class)
+                .addStatement("return $T.concat(tag, length, content)", TLVUtils.class)
                 .build();
     }
 
@@ -324,6 +421,7 @@ public class TLVProcessor extends AbstractProcessor {
                 .append(String.join(", ", fields.stream().map(fi -> fi.name).toList()))
                 .append(")");
 
+
         return MethodSpec.methodBuilder("decode")
                 .addModifiers(Modifier.PUBLIC)
                 .returns(className)
@@ -340,8 +438,24 @@ public class TLVProcessor extends AbstractProcessor {
                 body.append("boolean ").append(fi.name).append(" = false;\n");
             } else {
                 String declType = fi.isList ? "java.util.List" : boxType(fi.type);
-                body.append(declType).append(" ").append(fi.name).append(" = null;\n");
+                body.append(declType).append(" ")
+                        .append(fi.name)
+                        .append(" = ")
+                        .append(getDefaultValue(fi))
+                        .append(";\n");
             }
+        }
+    }
+
+    private String getDefaultValue(FieldInfo fi) {
+        if (fi.type.equals("int")) {
+            return String.valueOf(Integer.MIN_VALUE);
+        }
+        else if  (fi.type.equals("long")) {
+            return "(long)" + Integer.MIN_VALUE;
+        }
+        else {
+            return "null";
         }
     }
 
@@ -404,23 +518,20 @@ public class TLVProcessor extends AbstractProcessor {
             appendListDecode(sb, fi);
         } else if (fi.customCodec) {
             sb.append(fi.name).append(" = (").append(fi.type).append(")")
-                    .append("registry.getCodec(").append(fi.codecClassName).append(".class)")
-                    .append(".decode(byteArr, offset, fieldLength);\n");
-        } else if (fi.isValueType) {
-            sb.append(fi.name).append(" = (").append(fi.type).append(")")
-                    .append("registry.getValue(").append(fi.type).append(".class)")
+                    .append("registry.getCustomCodec(").append(fi.codecClassName).append(".class)")
                     .append(".decode(java.util.Arrays.copyOfRange(byteArr, offset, offset + fieldLength));\n");
-        } else if (fi.useInnerTagAsParent) {
+        } else if (fi.useInnerTagAsParent || fi.asNoInnerTag) {
             sb.append(fi.name).append(" = (").append(fi.type).append(")")
-                    .append("registry.getObject(").append(fi.type).append(".class)")
+                    .append("registry.getGeneratedTLVCodec(").append(fi.type).append(".class)")
                     .append(".decode(byteArr, offset, fieldLength);\n");
-        } else {
+        }
+        else {
             // Explicit @Tag wrapping an object — strip inner tag+length first
             sb.append("{\n");
             sb.append("int[] innerTagResult = TLVUtils.decodeTag(byteArr, offset);\n");
             sb.append("int[] innerLenResult = TLVUtils.decodeLength(byteArr, innerTagResult[1]);\n");
             sb.append(fi.name).append(" = (").append(fi.type).append(")")
-                    .append("registry.getObject(").append(fi.type).append(".class)")
+                    .append("registry.getGeneratedTLVCodec(").append(fi.type).append(".class)")
                     .append(".decode(byteArr, innerLenResult[1], innerLenResult[0]);\n");
             sb.append("}\n");
         }
@@ -437,13 +548,10 @@ public class TLVProcessor extends AbstractProcessor {
         sb.append("offset = itemLengthResult[1];\n");
 
         if (fi.customCodec) {
-            sb.append(fi.name).append(".add(registry.getCodec(")
-                    .append(fi.codecClassName).append(".class).decode(byteArr, offset, itemLen));\n");
-        } else if (fi.isItemValueType) {
-            sb.append(fi.name).append(".add(registry.getValue(")
-                    .append(fi.itemType).append(".class).decode(java.util.Arrays.copyOfRange(byteArr, offset, offset + itemLen)));\n");
+            sb.append(fi.name).append(".add(registry.getCustomCodec(")
+                    .append(fi.codecClassName).append(".class).decode(java.util.Arrays.copyOfRange(byteArr, offset, offset + fieldLength)));\n");
         } else {
-            sb.append(fi.name).append(".add(registry.getObject(")
+            sb.append(fi.name).append(".add(registry.getGeneratedTLVCodec(")
                     .append(fi.itemType).append(".class).decode(byteArr, offset, itemLen));\n");
         }
 
@@ -454,20 +562,29 @@ public class TLVProcessor extends AbstractProcessor {
     // ── Factory generation ───────────────────────────────────────────────
 
     private void generateTLVFactory(List<TypeSpec> codecs, Element e) throws IOException {
-        String pkg = packageOf(e);
-        ClassName tlvClass = ClassName.get(pkg, "TLV");
+        String pkg = GENERATED_PKG;
+        ClassName tlvClass = ClassName.get(io.github.pedrosilvabk.tlv.TLV.class);
+
         ClassName factoryClass = ClassName.get(pkg, "TLVFactory");
 
-        // createCodecRegistry() — registers all discovered codecs
-        StringBuilder registryBody = new StringBuilder();
-        registryBody.append("CodecRegistry cr = new CodecRegistry();\n");
-        registryBody.append("cr.registerValue(new IntegerCodec());\n");
-        registryBody.append("cr.registerValue(new StringCodec());\n");
-        registryBody.append("cr.registerValue(new BooleanCodec());\n");
+
+        MethodSpec.Builder registryMethod = MethodSpec.methodBuilder("createCodecRegistry");
+
+        registryMethod.addModifiers(Modifier.PUBLIC, Modifier.STATIC);
+        registryMethod.returns(CodecRegistry.class);
+
+        registryMethod.addStatement("CodecRegistry cr = new CodecRegistry();\n");
+        registryMethod.addStatement("cr.registerValue(new $T());\n", IntegerCodec.class);
+        registryMethod.addStatement("cr.registerValue(new $T());\n", StringCodec.class);
+        registryMethod.addStatement("cr.registerValue(new $T());\n", BooleanCodec.class);
+
         for (TypeSpec codec : codecs) {
-            registryBody.append("cr.registerObject(new %s(cr));\n".formatted(codec.name));
+            ClassName codecClass = ClassName.get(CODECS_PKG, codec.name);
+
+            registryMethod.addStatement("cr.registerObject(new $T(cr));\n", codecClass);
         }
-        registryBody.append("return cr");
+
+        registryMethod.addStatement("return cr");
 
         TypeSpec factory = TypeSpec.classBuilder("TLVFactory")
                 .addModifiers(Modifier.PUBLIC)
@@ -481,24 +598,20 @@ public class TLVProcessor extends AbstractProcessor {
                         .addStatement("this.builder = new TLVBuilder(codecRegistry)")
                         .build())
                 // static createCodecRegistry()
-                .addMethod(MethodSpec.methodBuilder("createCodecRegistry")
-                        .addModifiers(Modifier.PUBLIC, Modifier.STATIC)
-                        .returns(CodecRegistry.class)
-                        .addStatement(registryBody.toString())
-                        .build())
+                .addMethod( registryMethod.build() )
                 // static create() → TLV
                 .addMethod(MethodSpec.methodBuilder("create")
                         .addModifiers(Modifier.PUBLIC, Modifier.STATIC)
                         .returns(tlvClass)
                         .addStatement("CodecRegistry cr = createCodecRegistry()")
-                        .addStatement("return new TLV(new TLVParser(cr), new TLVBuilder(cr))")
+                        .addStatement("return new $T(new TLVParser(cr), new TLVBuilder(cr))", io.github.pedrosilvabk.tlv.TLV.class)
                         .build())
                 // static create(CodecRegistry) → TLV
                 .addMethod(MethodSpec.methodBuilder("create")
                         .addModifiers(Modifier.PUBLIC, Modifier.STATIC)
                         .returns(tlvClass)
                         .addParameter(CodecRegistry.class, "codecRegistry")
-                        .addStatement("return new TLV(new TLVParser(codecRegistry), new TLVBuilder(codecRegistry))")
+                        .addStatement("return new $T(new TLVParser(codecRegistry), new TLVBuilder(codecRegistry))", io.github.pedrosilvabk.tlv.TLV.class)
                         .build())
                 // static builder() → TLVFactory
                 .addMethod(MethodSpec.methodBuilder("builder")
@@ -533,7 +646,7 @@ public class TLVProcessor extends AbstractProcessor {
                 .addMethod(MethodSpec.methodBuilder("build")
                         .addModifiers(Modifier.PUBLIC)
                         .returns(tlvClass)
-                        .addStatement("return new TLV(parser, builder)")
+                        .addStatement("return new $T(parser, builder)", io.github.pedrosilvabk.tlv.TLV.class)
                         .build())
                 .build();
 
@@ -553,15 +666,13 @@ public class TLVProcessor extends AbstractProcessor {
     }
 
     private static String registryLookup(FieldInfo fi) {
-        if (fi.customCodec) return "registry.getCodec(" + fi.codecClassName + ".class)";
-        if (fi.isValueType) return "registry.getValue(" + fi.type + ".class)";
-        return "registry.getObject(" + fi.type + ".class)";
+        if (fi.customCodec) return "registry.getCustomCodec(" + fi.codecClassName + ".class)";
+        return "registry.getGeneratedTLVCodec(" + fi.type + ".class)";
     }
 
     private static String itemRegistryLookup(FieldInfo fi) {
-        if (fi.customCodec) return "registry.getCodec(" + fi.codecClassName + ".class)";
-        if (fi.isItemValueType) return "registry.getValue(" + fi.itemType + ".class)";
-        return "registry.getObject(" + fi.itemType + ".class)";
+        if (fi.customCodec) return "registry.getCustomCodec(" + fi.codecClassName + ".class)";
+        return "registry.getGeneratedTLVCodec(" + fi.itemType + ".class)";
     }
 
     /** Resolves a codec Class attribute that throws MirroredTypeException. */
@@ -580,8 +691,14 @@ public class TLVProcessor extends AbstractProcessor {
 
     private boolean isValueType(TypeMirror typeMirror) {
         TypeName typeName = TypeName.get(typeMirror);
-        return typeName.isPrimitive() || typeName.isBoxedPrimitive()
-                || typeMirror.toString().equals("java.lang.String");
+        if (typeName.isPrimitive() || typeName.isBoxedPrimitive()) {
+            return true;
+        }
+        if (typeMirror.getKind() == TypeKind.ARRAY) {
+            TypeMirror component = ((ArrayType) typeMirror).getComponentType();
+            return component.getKind() == TypeKind.BYTE;
+        }
+        return typeMirror.toString().equals("java.lang.String");
     }
 
     private static LinkedHashMap<Integer, List<FieldInfo>> groupByTag(List<FieldInfo> fields) {
@@ -610,8 +727,14 @@ public class TLVProcessor extends AbstractProcessor {
         };
     }
 
-    private static String getterName(String fieldName) {
-        return "get" + fieldName.substring(0, 1).toUpperCase() + fieldName.substring(1) + "()";
+    private static String getterName(String fieldName, String type) {
+        String suffix =fieldName.substring(0, 1).toUpperCase() + fieldName.substring(1) + "()";
+
+        if (type.equals("boolean")) {
+            return "is" +  suffix;
+        }
+
+        return "get" + suffix;
     }
 
     private String packageOf(Element element) {
@@ -625,12 +748,26 @@ public class TLVProcessor extends AbstractProcessor {
     private String writeEncodeTagAs(int tag, String varName) {
         byte[] encodedTag = TLVUtils.encodeTag(tag);
         StringBuilder sb = new StringBuilder();
+
         sb.append("byte[] ").append(varName).append(" = new byte[] {");
+
         for (int i = 0; i < encodedTag.length; i++) {
-            if (i > 0) sb.append(",");
-            sb.append("0x").append(String.format("%02X", encodedTag[i]));
+            if (i > 0) {
+                sb.append(", ");
+            }
+
+            int unsignedValue = encodedTag[i] & 0xFF;
+
+            if (unsignedValue > 127) {
+                sb.append("(byte) ");
+            }
+
+            sb.append("0x")
+                    .append(String.format("%02X", unsignedValue));
         }
+
         sb.append("}");
+
         return sb.toString();
     }
 }

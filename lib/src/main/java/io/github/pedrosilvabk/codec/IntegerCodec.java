@@ -2,15 +2,11 @@ package io.github.pedrosilvabk.codec;
 
 
 import io.github.pedrosilvabk.annotation.Codec;
-import io.github.pedrosilvabk.annotation.NativeCodec;
-import io.github.pedrosilvabk.registry.ValueTLVCodec;
+import io.github.pedrosilvabk.registry.CustomCodec;
 
 @Codec
-@NativeCodec
-public class IntegerCodec implements ValueTLVCodec<Integer> {
-    @Override
-    public Class<Integer> type() {
-        return Integer.TYPE;
+public class IntegerCodec extends CustomCodec<Integer> {
+    public IntegerCodec() {
     }
 
     @Override
@@ -20,14 +16,20 @@ public class IntegerCodec implements ValueTLVCodec<Integer> {
             bytes[i] = (byte) (value & 0xFF);
             value >>= 8;
         }
+
         return bytes;
     }
 
     @Override
     public Integer decode(byte[] bytes) {
+        if (bytes.length > 4) {
+            throw new IllegalArgumentException("Invalid byte array length");
+        }
+
         int value = 0;
-        for (int i = 0; i < 4; i++) {
-            value = (value << 8) | (bytes[i] & 0xFF);
+
+        for (byte aByte : bytes) {
+            value = (value << 8) | (aByte & 0xFF);
         }
         return value;
     }

@@ -1,9 +1,7 @@
 package io.github.pedrosilvabk.tlv;
 
 
-import io.github.pedrosilvabk.registry.CodecRegistry;
-import io.github.pedrosilvabk.registry.ObjectTLVCodec;
-import io.github.pedrosilvabk.registry.ValueTLVCodec;
+import io.github.pedrosilvabk.registry.*;
 import io.github.pedrosilvabk.utils.TLVUtils;
 
 public class TLVParser {
@@ -14,21 +12,21 @@ public class TLVParser {
     }
 
     public <T> T parse(byte[] tlv, Class<T> targetClass) {
-        if (targetClass.isPrimitive()) {
-            return decodeWith(codecRegistry.getValue(targetClass), tlv);
+        if (codecRegistry.hasCustomCodec(targetClass)) {
+            return decodeWith(codecRegistry.getCustomCodec(targetClass), tlv);
         }
         else {
-            return decodeWith(codecRegistry.getObject(targetClass), tlv);
+            return decodeWith(codecRegistry.getGeneratedTLVCodec(targetClass), tlv);
         }
     }
 
-    private <T> T decodeWith(ObjectTLVCodec<T> codec, byte[] tlv) {
+    private <T> T decodeWith(GeneratedCodec<T> codec, byte[] tlv) {
         int[] tagResult = TLVUtils.decodeTag(tlv, 0);
         int[] lengthResult = TLVUtils.decodeLength(tlv, tagResult[1]);
         return codec.decode(tlv, lengthResult[1], lengthResult[0]);
     }
 
-    private <T> T decodeWith(ValueTLVCodec<T> codec, byte[] tlv) {
+    private <T> T decodeWith(CustomCodec<T> codec, byte[] tlv) {
         return codec.decode(tlv);
     }
 }
