@@ -1,4 +1,4 @@
-# TLVParsing Library
+# TLVMapping Library
 
 A Java library that simplifies working with BER-TLV (Tag-Length-Value) structures by mapping them to plain Java objects using annotations and compile-time code generation.
 
