@@ -4,7 +4,7 @@ plugins {
 }
 
 group = 'io.github.pedrosilvabk'
-version = "1.0.1-SNAPSHOT"
+version = findProperty('releaseVersion') ?: '1.0.2-SNAPSHOT'
 
 repositories {
     // Use Maven Central for resolving dependencies.
